@@ -12,9 +12,9 @@ clip/
 gpt/
 bert/
 logs/
-
+__pycache__/
 *.mp4
 libero.egg-info/
 .vscode/
-_pycache_/
+*egg-info/
 
