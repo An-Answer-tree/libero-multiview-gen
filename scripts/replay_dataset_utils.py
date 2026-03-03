@@ -189,6 +189,8 @@ def replay_demo_episode(
     camera_names=None,
     no_proprio=False,
     divergence_threshold=0.01,
+    camera_height=128,
+    camera_width=128,
 ):
     if camera_names is None:
         camera_names = DEFAULT_CAMERA_NAMES
@@ -202,7 +204,7 @@ def replay_demo_episode(
     if len(actions) == 0:
         raise ValueError("Episode has empty actions")
 
-    safe_env_reset(env)
+    # We reload from XML directly so custom trajectory cameras only need to exist in this XML.
     model_xml = libero_utils.postprocess_model_xml(model_xml, {})
     env.reset_from_xml_string(model_xml)
     env.sim.reset()
@@ -233,11 +235,17 @@ def replay_demo_episode(
 
         for camera_name in camera_names:
             img_key = f"{camera_name}_image"
-            if img_key not in obs:
-                raise KeyError(
-                    f"Missing '{img_key}' from obs keys: {sorted(list(obs.keys()))}"
+            if img_key in obs:
+                image = obs[img_key]
+            else:
+                # For dynamically injected cameras, render directly from sim if no observable exists.
+                image = env.sim.render(
+                    camera_name=camera_name,
+                    width=int(camera_width),
+                    height=int(camera_height),
+                    depth=False,
                 )
-            corrected_image = correct_image_orientation(obs[img_key])
+            corrected_image = correct_image_orientation(image)
             obs_arrays[camera_name_to_obs_key(camera_name)].append(corrected_image)
 
         if not no_proprio:
@@ -336,7 +344,7 @@ def reconstruct_dataset_file(
 
         env, rebuilt_env_args = build_replay_env(
             source_data_group,
-            camera_names=camera_names,
+            camera_names=None,
             camera_height=camera_height,
             camera_width=camera_width,
         )
@@ -350,6 +358,8 @@ def reconstruct_dataset_file(
                     camera_names=camera_names,
                     no_proprio=no_proprio,
                     divergence_threshold=divergence_threshold,
+                    camera_height=camera_height,
+                    camera_width=camera_width,
                 )
                 write_episode_to_hdf5(target_data_group, demo_key, source_ep_group, replay_ep)
                 total_samples += replay_ep["num_samples"]
