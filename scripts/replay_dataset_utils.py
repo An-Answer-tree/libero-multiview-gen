@@ -56,6 +56,14 @@ def correct_image_orientation(image):
     return np.flip(image, axis=0).copy()
 
 
+def is_rgb_obs_key(obs_key):
+    return obs_key.endswith("_rgb")
+
+
+def has_valid_rgb_shape(shape):
+    return len(shape) == 4 and shape[-1] == 3 and shape[1] > 0 and shape[2] > 0
+
+
 def discover_benchmark_tasks(source_root, benchmark_names=None, task_filter=None):
     benchmark_dict = libero_benchmark.get_benchmark_dict()
     benchmark_names = benchmark_names or DEFAULT_BENCHMARKS
@@ -183,6 +191,44 @@ def _extract_proprio(obs):
     return proprio
 
 
+def render_camera_observation(env, obs, camera_name, camera_height, camera_width):
+    img_key = f"{camera_name}_image"
+    if img_key in obs:
+        image = obs[img_key]
+    else:
+        # Dynamically injected cameras do not always exist as observables.
+        image = env.sim.render(
+            camera_name=camera_name,
+            width=int(camera_width),
+            height=int(camera_height),
+            depth=False,
+        )
+    return correct_image_orientation(image)
+
+
+def restore_observations_from_state(env, mujoco_state):
+    if hasattr(env, "set_init_state"):
+        return env.set_init_state(mujoco_state)
+
+    env.sim.set_state_from_flattened(mujoco_state)
+    env.sim.forward()
+
+    if hasattr(env, "check_success"):
+        env.check_success()
+    elif hasattr(env, "_check_success"):
+        env._check_success()
+
+    if hasattr(env, "_post_process"):
+        env._post_process()
+    if hasattr(env, "_update_observables"):
+        env._update_observables(force=True)
+
+    try:
+        return env._get_observations(force_update=False)
+    except TypeError:
+        return env._get_observations()
+
+
 def replay_demo_episode(
     env,
     source_episode_group,
@@ -197,18 +243,22 @@ def replay_demo_episode(
 
     source_states = np.array(source_episode_group["states"][()])
     actions = np.array(source_episode_group["actions"][()])
+    source_obs_group = source_episode_group["obs"]
     model_xml = decode_attr(source_episode_group.attrs["model_file"])
 
     if len(source_states) == 0:
         raise ValueError("Episode has empty states")
     if len(actions) == 0:
         raise ValueError("Episode has empty actions")
+    if len(source_states) != len(actions):
+        raise ValueError(
+            f"Episode states/actions length mismatch: {len(source_states)} vs {len(actions)}"
+        )
 
-    # We reload from XML directly so custom trajectory cameras only need to exist in this XML.
+    # Reload the episode XML once, then restore every source simulator state directly.
     model_xml = libero_utils.postprocess_model_xml(model_xml, {})
     env.reset_from_xml_string(model_xml)
     env.sim.reset()
-    env.sim.set_state_from_flattened(source_states[0])
     env.sim.forward()
     model_xml = env.sim.model.get_xml()
 
@@ -216,61 +266,39 @@ def replay_demo_episode(
     for camera_name in camera_names:
         obs_arrays[camera_name_to_obs_key(camera_name)] = []
 
-    proprio_arrays = {}
-    robot_states = []
     replay_states = []
-    max_state_error = 0.0
-    num_diverged_steps = 0
+    max_restore_error = 0.0
+    num_restore_mismatches = 0
 
-    def capture_current_step(obs):
+    for source_state in source_states:
+        obs = restore_observations_from_state(env, source_state)
+        restored_state = env.sim.get_state().flatten().copy()
+        replay_states.append(restored_state)
+
+        restore_error = float(np.linalg.norm(restored_state - source_state))
+        max_restore_error = max(max_restore_error, restore_error)
+        if restore_error > divergence_threshold:
+            num_restore_mismatches += 1
+
         for camera_name in camera_names:
-            img_key = f"{camera_name}_image"
-            if img_key in obs:
-                image = obs[img_key]
-            else:
-                # For dynamically injected cameras, render directly from sim if no observable exists.
-                image = env.sim.render(
+            obs_arrays[camera_name_to_obs_key(camera_name)].append(
+                render_camera_observation(
+                    env=env,
+                    obs=obs,
                     camera_name=camera_name,
-                    width=int(camera_width),
-                    height=int(camera_height),
-                    depth=False,
+                    camera_height=camera_height,
+                    camera_width=camera_width,
                 )
-            corrected_image = correct_image_orientation(image)
-            obs_arrays[camera_name_to_obs_key(camera_name)].append(corrected_image)
-
-        if not no_proprio:
-            step_proprio = _extract_proprio(obs)
-            for key, value in step_proprio.items():
-                if key not in proprio_arrays:
-                    proprio_arrays[key] = []
-                proprio_arrays[key].append(value)
-
-        robot_states.append(env.get_robot_state_vector(obs))
-
-    obs = env._get_observations(force_update=True)
-    for step_idx, action in enumerate(actions):
-        # Record the observation before applying the action so image[i] aligns with action[i].
-        capture_current_step(obs)
-
-        obs, _, _, _ = env.step(action)
-        state_playback = env.sim.get_state().flatten()
-        replay_states.append(state_playback)
-
-        if step_idx < len(source_states) - 1:
-            err = float(np.linalg.norm(source_states[step_idx + 1] - state_playback))
-            max_state_error = max(max_state_error, err)
-            if err > divergence_threshold:
-                num_diverged_steps += 1
+            )
 
     obs_data = {}
+    # Keep non-image observation tensors bitwise identical to the official dataset.
+    for obs_key in source_obs_group.keys():
+        if is_rgb_obs_key(obs_key):
+            continue
+        obs_data[obs_key] = np.array(source_obs_group[obs_key][()])
     for key, values in obs_arrays.items():
         obs_data[key] = np.stack(values, axis=0)
-    if not no_proprio:
-        for key, values in proprio_arrays.items():
-            obs_data[key] = np.stack(values, axis=0)
-        if "ee_states" in obs_data:
-            obs_data["ee_pos"] = obs_data["ee_states"][:, :3]
-            obs_data["ee_ori"] = obs_data["ee_states"][:, 3:]
 
     if "rewards" in source_episode_group:
         rewards = np.array(source_episode_group["rewards"][()])
@@ -284,10 +312,15 @@ def replay_demo_episode(
         dones = np.zeros(len(actions), dtype=np.uint8)
         dones[-1] = 1
 
+    if "robot_states" in source_episode_group:
+        robot_states = np.array(source_episode_group["robot_states"][()])
+    else:
+        raise ValueError("Episode missing robot_states")
+
     return {
         "actions": actions,
         "states": source_states,
-        "robot_states": np.stack(robot_states, axis=0),
+        "robot_states": robot_states,
         "obs_data": obs_data,
         "rewards": rewards,
         "dones": dones,
@@ -295,8 +328,8 @@ def replay_demo_episode(
         "model_file": model_xml,
         "init_state": source_states[0],
         "replay_states": np.stack(replay_states, axis=0),
-        "max_state_error": max_state_error,
-        "num_diverged_steps": num_diverged_steps,
+        "max_restore_error": max_restore_error,
+        "num_restore_mismatches": num_restore_mismatches,
     }
 
 
@@ -372,8 +405,8 @@ def reconstruct_dataset_file(
                     {
                         "demo_key": demo_key,
                         "num_samples": replay_ep["num_samples"],
-                        "max_state_error": replay_ep["max_state_error"],
-                        "num_diverged_steps": replay_ep["num_diverged_steps"],
+                        "max_restore_error": replay_ep["max_restore_error"],
+                        "num_restore_mismatches": replay_ep["num_restore_mismatches"],
                     }
                 )
         finally:
@@ -453,6 +486,25 @@ def validate_reconstructed_file(source_hdf5_path, rebuilt_hdf5_path):
                         f"{demo_key}/states shape mismatch {src_ep['states'].shape} vs {dst_ep['states'].shape}"
                     )
 
+            if "robot_states" in src_ep and "robot_states" in dst_ep:
+                if src_ep["robot_states"].shape != dst_ep["robot_states"].shape:
+                    errors.append(
+                        f"{demo_key}/robot_states shape mismatch "
+                        f"{src_ep['robot_states'].shape} vs {dst_ep['robot_states'].shape}"
+                    )
+
+            if "rewards" in src_ep and "rewards" in dst_ep:
+                if src_ep["rewards"].shape != dst_ep["rewards"].shape:
+                    errors.append(
+                        f"{demo_key}/rewards shape mismatch {src_ep['rewards'].shape} vs {dst_ep['rewards'].shape}"
+                    )
+
+            if "dones" in src_ep and "dones" in dst_ep:
+                if src_ep["dones"].shape != dst_ep["dones"].shape:
+                    errors.append(
+                        f"{demo_key}/dones shape mismatch {src_ep['dones'].shape} vs {dst_ep['dones'].shape}"
+                    )
+
             if "obs" in src_ep and "obs" in dst_ep:
                 src_obs_keys = sorted(src_ep["obs"].keys())
                 dst_obs_keys = sorted(dst_ep["obs"].keys())
@@ -462,9 +514,21 @@ def validate_reconstructed_file(source_hdf5_path, rebuilt_hdf5_path):
                 for obs_key in src_obs_keys:
                     if obs_key not in dst_ep["obs"]:
                         continue
-                    if src_ep["obs"][obs_key].shape != dst_ep["obs"][obs_key].shape:
+                    src_shape = src_ep["obs"][obs_key].shape
+                    dst_shape = dst_ep["obs"][obs_key].shape
+                    if is_rgb_obs_key(obs_key):
+                        if src_shape[0] != dst_shape[0]:
+                            errors.append(
+                                f"{demo_key}/obs/{obs_key} frame count mismatch "
+                                f"{src_shape[0]} vs {dst_shape[0]}"
+                            )
+                        if not has_valid_rgb_shape(dst_shape):
+                            errors.append(
+                                f"{demo_key}/obs/{obs_key} invalid rebuilt rgb shape {dst_shape}"
+                            )
+                    elif src_shape != dst_shape:
                         errors.append(
-                            f"{demo_key}/obs/{obs_key} shape mismatch {src_ep['obs'][obs_key].shape} vs {dst_ep['obs'][obs_key].shape}"
+                            f"{demo_key}/obs/{obs_key} shape mismatch {src_shape} vs {dst_shape}"
                         )
 
             src_num = int(src_ep.attrs.get("num_samples", -1))

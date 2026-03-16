@@ -128,31 +128,26 @@ def _handle_successful_replay(
 ) -> None:
     """Updates aggregate counters and prints the replay summary."""
 
-    diverged_steps = sum(episode["num_diverged_steps"] for episode in summary["episodes"])
-    diverged_ratio = (
-        float(diverged_steps) / float(summary["total_samples"])
-        if summary["total_samples"] > 0
-        else 0.0
-    )
-
     stats.processed += 1
     stats.total_samples += summary["total_samples"]
-    max_err = (
-        max(episode["max_state_error"] for episode in summary["episodes"])
+    max_restore_error = (
+        max(episode["max_restore_error"] for episode in summary["episodes"])
         if summary["episodes"]
         else 0.0
     )
-    diverged_episodes = sum(
-        episode["num_diverged_steps"] > 0 for episode in summary["episodes"]
+    restore_mismatch_steps = sum(
+        episode["num_restore_mismatches"] for episode in summary["episodes"]
     )
+    restored_from_source_states = summary["total_samples"]
     print(
-        "[ok] demos={num_demos}, transitions={num_samples}, max_state_error={max_err:.6f}, "
-        "diverged_episodes={diverged}, diverged_ratio={diverged_ratio:.4f}".format(
+        "[ok] demos={num_demos}, transitions={num_samples}, "
+        "rendered_from_source_states={rendered}, max_restore_error={max_err:.6f}, "
+        "restore_mismatches={mismatches}".format(
             num_demos=summary["num_demos"],
             num_samples=summary["total_samples"],
-            max_err=max_err,
-            diverged=diverged_episodes,
-            diverged_ratio=diverged_ratio,
+            rendered=restored_from_source_states,
+            max_err=max_restore_error,
+            mismatches=restore_mismatch_steps,
         )
     )
     _print_verify_commands(src_path, dst_path)
