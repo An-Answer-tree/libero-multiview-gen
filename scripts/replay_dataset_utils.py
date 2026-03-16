@@ -222,17 +222,7 @@ def replay_demo_episode(
     max_state_error = 0.0
     num_diverged_steps = 0
 
-    for step_idx, action in enumerate(actions):
-        obs, _, _, _ = env.step(action)
-        state_playback = env.sim.get_state().flatten()
-        replay_states.append(state_playback)
-
-        if step_idx < len(source_states) - 1:
-            err = float(np.linalg.norm(source_states[step_idx + 1] - state_playback))
-            max_state_error = max(max_state_error, err)
-            if err > divergence_threshold:
-                num_diverged_steps += 1
-
+    def capture_current_step(obs):
         for camera_name in camera_names:
             img_key = f"{camera_name}_image"
             if img_key in obs:
@@ -256,6 +246,21 @@ def replay_demo_episode(
                 proprio_arrays[key].append(value)
 
         robot_states.append(env.get_robot_state_vector(obs))
+
+    obs = env._get_observations(force_update=True)
+    for step_idx, action in enumerate(actions):
+        # Record the observation before applying the action so image[i] aligns with action[i].
+        capture_current_step(obs)
+
+        obs, _, _, _ = env.step(action)
+        state_playback = env.sim.get_state().flatten()
+        replay_states.append(state_playback)
+
+        if step_idx < len(source_states) - 1:
+            err = float(np.linalg.norm(source_states[step_idx + 1] - state_playback))
+            max_state_error = max(max_state_error, err)
+            if err > divergence_threshold:
+                num_diverged_steps += 1
 
     obs_data = {}
     for key, values in obs_arrays.items():
