@@ -450,12 +450,16 @@ def _generate_operation_camera_specs(
     front_dir = _normalize(np.array([front_rel[0], front_rel[1], 0.0], dtype=np.float64))
     back_dir = -front_dir
 
-    left_camera = _find_camera_element(camera_map, ["sideview"])
-    if left_camera is not None:
-        left_pos, _, _ = _camera_pose_from_element(left_camera)
-        left_rel = left_pos - center
+    side_camera = _find_camera_element(camera_map, ["sideview"])
+    # LIBERO's legacy `sideview` aligns with the view that users expect to see
+    # as `rightview` in the generated multiview dataset. Use it as the right-side
+    # reference and derive the left-side camera by mirroring it across the
+    # front-view plane so variable names and exported camera names stay aligned.
+    if side_camera is not None:
+        side_pos, _, _ = _camera_pose_from_element(side_camera)
+        right_rel = side_pos - center
     else:
-        left_rel = _rotate_xy(front_rel, 90.0)
+        right_rel = _rotate_xy(front_rel, 90.0)
 
     top_camera = _find_camera_element(camera_map, ["birdview"])
     if top_camera is not None:
@@ -464,7 +468,7 @@ def _generate_operation_camera_specs(
     else:
         horizontal_radius = max(
             np.linalg.norm(front_rel[:2]),
-            np.linalg.norm(left_rel[:2]),
+            np.linalg.norm(right_rel[:2]),
             0.8,
         )
         top_rel = np.array(
@@ -476,9 +480,9 @@ def _generate_operation_camera_specs(
             dtype=np.float64,
         )
 
-    right_rel = np.array([left_rel[0], -left_rel[1], left_rel[2]], dtype=np.float64)
-    if np.linalg.norm(right_rel[:2]) <= 1e-8:
-        right_rel = _rotate_xy(front_rel, -90.0)
+    left_rel = np.array([right_rel[0], -right_rel[1], right_rel[2]], dtype=np.float64)
+    if np.linalg.norm(left_rel[:2]) <= 1e-8:
+        left_rel = _rotate_xy(front_rel, -90.0)
 
     back_rel = _rotate_xy(front_rel, 180.0)
 
