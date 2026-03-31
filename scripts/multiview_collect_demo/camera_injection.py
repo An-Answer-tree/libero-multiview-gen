@@ -28,6 +28,8 @@ DEFAULT_OPERATION_CAMERA_NAMES = {
     "left": "operation_leftview",
     "right": "operation_rightview",
     "back": "operation_backview",
+    "left_back": "operation_leftbackview",
+    "right_back": "operation_rightbackview",
 }
 
 
@@ -427,6 +429,69 @@ def _generate_operation_camera_specs(
 ) -> list[CameraSpec]:
     """Generates the fixed operation cameras around the inferred scene center."""
 
+    def build_back_corner_position(diagonal_rel: np.ndarray) -> np.ndarray:
+        """Builds one back-corner camera position."""
+
+        diagonal_pos = center + np.asarray(diagonal_rel, dtype=np.float64)
+        diagonal_xy = diagonal_pos[:2] - center[:2]
+        diagonal_xy_norm = float(np.linalg.norm(diagonal_xy))
+        if diagonal_xy_norm <= 1e-8:
+            diagonal_xy = np.array([1.0, 0.0], dtype=np.float64)
+            diagonal_xy_norm = 1.0
+
+        diagonal_dir = diagonal_xy / diagonal_xy_norm
+        diagonal_pos[:2] = center[:2] + diagonal_dir * back_horizontal_radius
+        diagonal_pos[:2] -= diagonal_dir * (0.95 * horizontal_radius)
+        diagonal_pos[2] = center[2] + 0.5 * (back_rel[2] + diagonal_rel[2])
+        diagonal_pos[2] += 0.42 * horizontal_radius
+        return diagonal_pos
+
+    def shift_lookat_lateral(
+        camera_pos: np.ndarray,
+        target_pos: np.ndarray,
+        distance: float,
+        side: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Shifts a look-at camera pair sideways while preserving view direction."""
+
+        forward = _normalize(
+            np.asarray(target_pos, dtype=np.float64)
+            - np.asarray(camera_pos, dtype=np.float64)
+        )
+        up_hint = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        left_dir = np.cross(up_hint, forward)
+        if np.linalg.norm(left_dir) <= 1e-8:
+            up_hint = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            left_dir = np.cross(up_hint, forward)
+        left_dir = _normalize(left_dir)
+        if side == "right":
+            left_dir = -left_dir
+        shift = left_dir * float(distance)
+        return (
+            np.asarray(camera_pos, dtype=np.float64) + shift,
+            np.asarray(target_pos, dtype=np.float64) + shift,
+        )
+
+    def shift_lookat_forward(
+        camera_pos: np.ndarray,
+        target_pos: np.ndarray,
+        distance: float,
+        direction: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Shifts a look-at camera pair forward or backward."""
+
+        forward = _normalize(
+            np.asarray(target_pos, dtype=np.float64)
+            - np.asarray(camera_pos, dtype=np.float64)
+        )
+        if direction == "backward":
+            forward = -forward
+        shift = forward * float(distance)
+        return (
+            np.asarray(camera_pos, dtype=np.float64) + shift,
+            np.asarray(target_pos, dtype=np.float64) + shift,
+        )
+
     camera_map = {
         camera.get("name"): camera
         for camera in root.iter("camera")
@@ -527,6 +592,9 @@ def _generate_operation_camera_specs(
         left_rel = _rotate_xy(front_rel, -90.0)
 
     back_rel = _rotate_xy(front_rel, 180.0)
+    back_horizontal_radius = max(np.linalg.norm(back_rel[:2]), 0.8)
+    left_back_rel = 0.5 * (back_rel + left_rel)
+    right_back_rel = 0.5 * (back_rel + right_rel)
 
     # Apply small, task-agnostic view corrections for the generated operation cameras:
     # rotate the side cameras slightly further toward the front workspace, move the top
@@ -542,6 +610,10 @@ def _generate_operation_camera_specs(
     right_pos[2] += 0.26 * horizontal_radius
     back_pos = center + back_rel - back_dir * (0.95 * horizontal_radius)
     back_pos[2] += 0.42 * horizontal_radius
+    left_back_pos = build_back_corner_position(left_back_rel)
+    right_back_pos = build_back_corner_position(right_back_rel)
+    left_back_pos[2] -= 0.50
+    right_back_pos[2] -= 0.50
     top_target = center.copy()
     top_target[2] -= 0.60 * horizontal_radius
     top_pos = top_pos + _normalize(top_target - top_pos) * (0.22 * horizontal_radius)
@@ -552,6 +624,48 @@ def _generate_operation_camera_specs(
     back_target = center.copy()
     back_target[2] += 0.40 * horizontal_radius
     back_target = _pitch_target_up(back_pos, back_target, 15.0)
+    left_back_target = center.copy()
+    left_back_target[2] += 0.40 * horizontal_radius
+    left_back_target = _pitch_target_up(left_back_pos, left_back_target, -50.0)
+    right_back_target = center.copy()
+    right_back_target[2] += 0.40 * horizontal_radius
+    right_back_target = _pitch_target_up(right_back_pos, right_back_target, -50.0)
+    left_back_pos, left_back_target = shift_lookat_lateral(
+        left_back_pos,
+        left_back_target,
+        0.60,
+        side="right",
+    )
+    left_back_pos, left_back_target = shift_lookat_forward(
+        left_back_pos,
+        left_back_target,
+        0.30,
+        direction="backward",
+    )
+    left_back_pos, left_back_target = shift_lookat_lateral(
+        left_back_pos,
+        left_back_target,
+        0.15,
+        side="left",
+    )
+    right_back_pos, right_back_target = shift_lookat_lateral(
+        right_back_pos,
+        right_back_target,
+        0.60,
+        side="left",
+    )
+    right_back_pos, right_back_target = shift_lookat_forward(
+        right_back_pos,
+        right_back_target,
+        0.30,
+        direction="backward",
+    )
+    right_back_pos, right_back_target = shift_lookat_lateral(
+        right_back_pos,
+        right_back_target,
+        0.15,
+        side="right",
+    )
 
     return [
         _build_fixed_camera_spec(
@@ -576,6 +690,18 @@ def _generate_operation_camera_specs(
             name=config.camera_names["back"],
             pos=back_pos,
             target_pos=back_target,
+            camera_fovy=camera_fovy,
+        ),
+        _build_fixed_camera_spec(
+            name=config.camera_names["left_back"],
+            pos=left_back_pos,
+            target_pos=left_back_target,
+            camera_fovy=camera_fovy,
+        ),
+        _build_fixed_camera_spec(
+            name=config.camera_names["right_back"],
+            pos=right_back_pos,
+            target_pos=right_back_target,
             camera_fovy=camera_fovy,
         ),
     ]

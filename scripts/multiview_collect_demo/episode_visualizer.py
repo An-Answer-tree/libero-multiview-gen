@@ -17,6 +17,8 @@ PREFERRED_OBS_ORDER = [
     "operation_leftview_rgb",
     "operation_rightview_rgb",
     "operation_backview_rgb",
+    "operation_leftbackview_rgb",
+    "operation_rightbackview_rgb",
 ]
 
 
