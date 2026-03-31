@@ -10,9 +10,6 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw
 
-from .validation import sorted_demo_keys
-
-
 PREFERRED_OBS_ORDER = [
     "eye_in_hand_rgb",
     "agentview_rgb",
@@ -21,6 +18,14 @@ PREFERRED_OBS_ORDER = [
     "operation_rightview_rgb",
     "operation_backview_rgb",
 ]
+
+
+def sorted_demo_keys(data_group):
+    """Returns episode keys sorted by numeric suffix."""
+
+    demo_keys = [key for key in data_group.keys() if key.startswith("demo_")]
+    return sorted(demo_keys, key=lambda key: int(key.split("_")[1]))
+
 
 def _discover_rgb_obs_keys(obs_group):
     keys = [key for key in obs_group.keys() if key.endswith("_rgb")]

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 import xml.etree.ElementTree as ET
 
 import init_path  # noqa: F401
@@ -16,14 +16,56 @@ from libero.libero import get_libero_path
 from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation
 
-from .config import (
-    DEFAULT_LEGACY_ASSET_MARKERS,
-    OperationCameraConfig,
-    TrajectoryCameraConfig,
-    dedupe_keep_order,
-)
-
 _ORIGINAL_POSTPROCESS_MODEL_XML = replay_utils.libero_utils.postprocess_model_xml
+DEFAULT_LEGACY_ASSET_MARKERS = (
+    "chiliocosm/assets/",
+    "libero/libero/assets/",
+    "libero/assets/",
+)
+DEFAULT_OPERATION_CAMERA_BASE_NAME = "agentview"
+DEFAULT_OPERATION_CAMERA_NAMES = {
+    "top": "operation_topview",
+    "left": "operation_leftview",
+    "right": "operation_rightview",
+    "back": "operation_backview",
+}
+
+
+@dataclass(frozen=True)
+class OperationCameraConfig:
+    """Configuration for generated fixed operation cameras."""
+
+    base_camera_name: str = DEFAULT_OPERATION_CAMERA_BASE_NAME
+    camera_names: Mapping[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_OPERATION_CAMERA_NAMES)
+    )
+
+
+@dataclass(frozen=True)
+class TrajectoryCameraConfig:
+    """Configuration for generated trajectory cameras."""
+
+    base_camera_name: str
+    offset_file: str
+    d_phi: np.ndarray
+    d_theta: np.ndarray
+    d_r: np.ndarray
+    num_cameras: int
+    interp_samples: int
+    camera_names: list[str]
+
+
+def dedupe_keep_order(items: Iterable[str]) -> list[str]:
+    """Returns items with duplicates removed while preserving order."""
+
+    seen = set()
+    deduped = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 @dataclass(frozen=True)
