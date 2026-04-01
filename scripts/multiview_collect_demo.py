@@ -154,6 +154,23 @@ def get_camera_info_in_base(
     }
 
 
+def maybe_patch_scene4_salad_dressing_xml(
+    model_xml: str,
+    reset_error: Exception,
+) -> Optional[str]:
+    """Returns a patched XML for the known Scene4 salad dressing naming mismatch."""
+
+    error_message = str(reset_error)
+    if "new_salad_dressing_1_g0" not in error_message:
+        return None
+    if "salad_dressing_1_g0" not in model_xml:
+        return None
+    patched_model_xml = model_xml.replace("salad_dressing_1", "new_salad_dressing_1")
+    if patched_model_xml == model_xml:
+        return None
+    return patched_model_xml
+
+
 def replay_demo_episode_with_camera_info(
     env: Any,
     source_episode_group: h5py.Group,
@@ -184,7 +201,14 @@ def replay_demo_episode_with_camera_info(
         )
 
     model_xml = replay_utils.libero_utils.postprocess_model_xml(model_xml, {})
-    env.reset_from_xml_string(model_xml)
+    try:
+        env.reset_from_xml_string(model_xml)
+    except ValueError as exc:
+        patched_model_xml = maybe_patch_scene4_salad_dressing_xml(model_xml, exc)
+        if patched_model_xml is None:
+            raise
+        model_xml = patched_model_xml
+        env.reset_from_xml_string(model_xml)
     env.sim.reset()
     env.sim.forward()
     model_xml = env.sim.model.get_xml()
